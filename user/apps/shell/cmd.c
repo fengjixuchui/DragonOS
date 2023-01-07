@@ -1,18 +1,18 @@
 #include "cmd.h"
-#include <libc/string.h>
-#include <libc/stdio.h>
-#include <libc/stddef.h>
-#include <libsystem/syscall.h>
-#include <libc/string.h>
-#include <libc/errno.h>
-#include <libc/unistd.h>
-#include <libc/stdlib.h>
-#include <libc/fcntl.h>
-#include <libc/dirent.h>
-#include <libc/sys/wait.h>
-#include <libc/sys/stat.h>
 #include "cmd_help.h"
 #include "cmd_test.h"
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <libsystem/syscall.h>
 
 // 当前工作目录（在main_loop中初始化）
 char *shell_current_path = NULL;
@@ -20,22 +20,11 @@ char *shell_current_path = NULL;
  * @brief shell 内建函数的主命令与处理函数的映射表
  *
  */
-struct built_in_cmd_t shell_cmds[] =
-    {
-        {"cd", shell_cmd_cd},
-        {"cat", shell_cmd_cat},
-        {"exec", shell_cmd_exec},
-        {"ls", shell_cmd_ls},
-        {"mkdir", shell_cmd_mkdir},
-        {"pwd", shell_cmd_pwd},
-        {"rm", shell_cmd_rm},
-        {"rmdir", shell_cmd_rmdir},
-        {"reboot", shell_cmd_reboot},
-        {"touch", shell_cmd_touch},
-        {"about", shell_cmd_about},
-        {"free", shell_cmd_free},
-        {"help", shell_help},
-        {"pipe", shell_pipe_test},
+struct built_in_cmd_t shell_cmds[] = {
+    {"cd", shell_cmd_cd},         {"cat", shell_cmd_cat},     {"exec", shell_cmd_exec},   {"ls", shell_cmd_ls},
+    {"mkdir", shell_cmd_mkdir},   {"pwd", shell_cmd_pwd},     {"rm", shell_cmd_rm},       {"rmdir", shell_cmd_rmdir},
+    {"reboot", shell_cmd_reboot}, {"touch", shell_cmd_touch}, {"about", shell_cmd_about}, {"free", shell_cmd_free},
+    {"help", shell_help},         {"pipe", shell_pipe_test},  {"kill", shell_cmd_kill},
 
 };
 // 总共的内建命令数量
@@ -50,26 +39,38 @@ const static int total_built_in_cmd_num = sizeof(shell_cmds) / sizeof(struct bui
  */
 static char *get_target_filepath(const char *filename, int *result_path_len)
 {
-    int cwd_len = strlen(shell_current_path);
+    char *file_path = NULL;
+    if (filename[0] != '/')
+    {
+        int cwd_len = strlen(shell_current_path);
 
-    // 计算文件完整路径的长度
-    *result_path_len = cwd_len + strlen(filename);
+        // 计算文件完整路径的长度
+        *result_path_len = cwd_len + strlen(filename);
 
-    char *file_path = (char *)malloc(*result_path_len + 2);
+        file_path = (char *)malloc(*result_path_len + 2);
 
-    memset(file_path, 0, *result_path_len + 2);
+        memset(file_path, 0, *result_path_len + 2);
 
-    strcpy(file_path, shell_current_path);
+        strncpy(file_path, shell_current_path, cwd_len);
 
-    // 在文件路径中加入斜杠
-    if (cwd_len > 1)
-        file_path[cwd_len] = '/';
+        // 在文件路径中加入斜杠
+        if (cwd_len > 1)
+            file_path[cwd_len] = '/';
 
-    // 拼接完整路径
-    if (filename[0] == '/')
-        strcat(file_path, filename + 1);
-    else
+        // 拼接完整路径
         strcat(file_path, filename);
+    }
+    else
+    {
+        *result_path_len = strlen(filename);
+        file_path = (char *)malloc(*result_path_len + 2);
+
+        memset(file_path, 0, *result_path_len + 2);
+
+        strncpy(file_path, filename, *result_path_len);
+        if(filename[(*result_path_len)-1]!='/')
+            file_path[*result_path_len] = '/';
+    }
 
     return file_path;
 }
@@ -210,7 +211,6 @@ int shell_cmd_cd(int argc, char **argv)
             new_path[current_dir_len] = '/';
         strcat(new_path, argv[1] + dest_offset);
         int x = chdir(new_path);
-
         if (x == 0) // 成功切换目录
         {
             free(shell_current_path);
@@ -221,6 +221,7 @@ int shell_cmd_cd(int argc, char **argv)
         }
         else
         {
+            free(new_path);
             printf("ERROR: Cannot switch to directory: %s\n", new_path);
             goto fail;
         }
@@ -323,9 +324,9 @@ int shell_cmd_cat(int argc, char **argv)
         file_size -= l;
         printf("%s", buf);
     }
-
     close(fd);
     free(buf);
+    free(file_path);
     if (argv != NULL)
         free(argv);
     return 0;
@@ -342,10 +343,14 @@ int shell_cmd_touch(int argc, char **argv)
 {
     int path_len = 0;
     char *file_path;
+    bool alloc_full_path = false;
     if (argv[1][0] == '/')
         file_path = argv[1];
     else
+    {
         file_path = get_target_filepath(argv[1], &path_len);
+        alloc_full_path = true;
+    }
 
     // 打开文件
     int fd = open(file_path, O_CREAT);
@@ -361,18 +366,10 @@ int shell_cmd_touch(int argc, char **argv)
     close(fd);
     if (argv != NULL)
         free(argv);
+    if (alloc_full_path)
+        free(file_path);
     return 0;
 }
-
-/**
- * @brief 删除命令
- *
- * @param argc
- * @param argv
- * @return int
- */
-// todo:
-int shell_cmd_rm(int argc, char **argv) {return 0;}
 
 /**
  * @brief 创建文件夹的命令
@@ -384,19 +381,22 @@ int shell_cmd_rm(int argc, char **argv) {return 0;}
 int shell_cmd_mkdir(int argc, char **argv)
 {
     int result_path_len = -1;
-    const char *full_path = NULL;
+    char *full_path = NULL;
+    bool alloc_full_path = false;
     if (argv[1][0] == '/')
         full_path = argv[1];
     else
     {
         full_path = get_target_filepath(argv[1], &result_path_len);
+        alloc_full_path = true;
     }
     // printf("mkdir: full_path = %s\n", full_path);
     int retval = mkdir(full_path, 0);
 
     if (argv != NULL)
         free(argv);
-
+    if (alloc_full_path)
+        free(full_path);
     return retval;
 }
 
@@ -407,20 +407,60 @@ int shell_cmd_mkdir(int argc, char **argv)
  * @param argv
  * @return int
  */
-// todo:
 int shell_cmd_rmdir(int argc, char **argv)
 {
-    const char *full_path = NULL;
+    char *full_path = NULL;
     int result_path_len = -1;
+    bool alloc_full_path = false;
+
     if (argv[1][0] == '/')
         full_path = argv[1];
     else
+    {
         full_path = get_target_filepath(argv[1], &result_path_len);
+        alloc_full_path = true;
+    }
     int retval = rmdir(full_path);
+    if (retval != 0)
+        printf("Failed to remove %s, retval=%d\n", full_path, retval);
     // printf("rmdir: path=%s, retval=%d\n", full_path, retval);
     if (argv != NULL)
         free(argv);
+    if (alloc_full_path)
+        free(full_path);
+    return retval;
+}
 
+/**
+ * @brief 删除文件的命令
+ *
+ * @param argc
+ * @param argv
+ * @return int
+ */
+int shell_cmd_rm(int argc, char **argv)
+{
+    char *full_path = NULL;
+    int result_path_len = -1;
+    int retval = 0;
+    bool alloc_full_path = false;
+
+    if (argv[1][0] == '/')
+        full_path = argv[1];
+    else
+    {
+        full_path = get_target_filepath(argv[1], &result_path_len);
+        alloc_full_path = true;
+    }
+
+    retval = rm(full_path);
+    // printf("rmdir: path=%s, retval=%d\n", full_path, retval);
+    if (retval != 0)
+        printf("Failed to remove %s, retval=%d\n", full_path, retval);
+    if (alloc_full_path)
+        free(full_path);
+    if (argv != NULL)
+        free(argv);
     return retval;
 }
 
@@ -439,23 +479,27 @@ int shell_cmd_exec(int argc, char **argv)
 
     if (pid == 0)
     {
-        // printf("child proc\n");
+
         // 子进程
         int path_len = 0;
         char *file_path = get_target_filepath(argv[1], &path_len);
         // printf("before execv, path=%s, argc=%d\n", file_path, argc);
         execv(file_path, argv);
         free(argv);
-        while (1)
-            ;
-        exit(0);
+        free(file_path);
+
+        exit(-1);
     }
     else
     {
-        // printf("parent process wait for pid:[ %d ]\n", pid);
-
-        waitpid(pid, &retval, 0);
-        // printf("parent process wait pid [ %d ], exit code=%d\n", pid, retval);
+        // 如果不指定后台运行,则等待退出
+        if (strcmp(argv[argc - 1], "&") != 0)
+            waitpid(pid, &retval, 0);
+        else
+        {
+            // 输出子进程的pid
+            printf("[1] %d\n", pid);
+        }
         free(argv);
     }
 }
@@ -469,11 +513,26 @@ int shell_cmd_about(int argc, char **argv)
 
     unsigned char input_buffer[INPUT_BUFFER_SIZE] = {0};
 
-    strcpy(input_buffer, "exec /about.elf\0");
+    strcpy(input_buffer, "exec /bin/about.elf\0");
 
     parse_command(input_buffer, &aac, &aav);
 
-    shell_cmd_exec(aac, aav);
+    return shell_cmd_exec(aac, aav);
+}
+
+int shell_cmd_kill(int argc, char **argv)
+{
+    int retval = 0;
+    if (argc < 2)
+    {
+        printf("Usage: Kill <pid>\n");
+        retval = -EINVAL;
+        goto out;
+    }
+    retval = kill(atoi(argv[1]), SIGKILL);
+out:;
+    free(argv);
+    return retval;
 }
 
 /**
@@ -510,11 +569,13 @@ int shell_cmd_free(int argc, char **argv)
     printf("Mem:\t");
     if (argc == 1) // 按照kb显示
     {
-        printf("%ld\t%ld\t%ld\t%ld\t%ld\t%ld\t\n", mst.total >> 10, mst.used >> 10, mst.free >> 10, mst.shared >> 10, mst.cache_used >> 10, mst.available >> 10);
+        printf("%ld\t%ld\t%ld\t%ld\t%ld\t%ld\t\n", mst.total >> 10, mst.used >> 10, mst.free >> 10, mst.shared >> 10,
+               mst.cache_used >> 10, mst.available >> 10);
     }
     else // 按照MB显示
     {
-        printf("%ld\t%ld\t%ld\t%ld\t%ld\t%ld\t\n", mst.total >> 20, mst.used >> 20, mst.free >> 20, mst.shared >> 20, mst.cache_used >> 20, mst.available >> 20);
+        printf("%ld\t%ld\t%ld\t%ld\t%ld\t%ld\t\n", mst.total >> 20, mst.used >> 20, mst.free >> 20, mst.shared >> 20,
+               mst.cache_used >> 20, mst.available >> 20);
     }
 
 done:;

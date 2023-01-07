@@ -22,6 +22,7 @@
    kernel/locking/index
    kernel/process_management/index
    kernel/sched/index
+   kernel/ipc/index
    kernel/memory_management/index
    kernel/filesystem/index
    kernel/debug/index
@@ -47,6 +48,7 @@
 
    community/code_contribution/index
    community/contact/index
+   community/ChangeLog/index
 
 
 Indices and tables
